@@ -1,0 +1,223 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.11.1
+  creationTimestamp: null
+  name: policyendpoints.policy.k8s.aws.nodeagent
+spec:
+  group: policy.k8s.aws.nodeagent
+  names:
+    kind: PolicyEndpoints
+    listKind: PolicyEndpointsList
+    plural: policyendpoints
+    singular: policyendpoints
+  scope: Namespaced
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        description: PolicyEndpoints is the Schema for the policyendpoints API
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PolicyEndpointsSpec defines the desired state of PolicyEndpoints
+            properties:
+              egress:
+                description: Egress is the list of egress rules
+                items:
+                  properties:
+                    ports:
+                      description: Ports is the list of ports
+                      items:
+                        description: Port contains information about the transport
+                          port/protocol
+                        properties:
+                          endPort:
+                            description: Endport specifies the port range port to
+                              endPort port must be defined and an integer, endPort
+                              > port
+                            format: int32
+                            type: integer
+                          port:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Port specifies the numerical or named port
+                              for the protocol. If empty, applies to all ports.
+                            x-kubernetes-int-or-string: true
+                          protocol:
+                            description: Protocol specifies the transport protocol,
+                              default TCP
+                            enum:
+                            - TCP
+                            - UDP
+                            type: string
+                        type: object
+                      type: array
+                    to:
+                      description: To is the list of network IP/CIDR addresses
+                      items:
+                        properties:
+                          cidr:
+                            description: CIDR specifies the network address(es) of
+                              the endpoint.
+                            type: string
+                          except:
+                            description: Except is the exceptions to the CIDR ranges
+                              mentioned above. The exception must be within the specified
+                              CIDR range.
+                            items:
+                              type: string
+                            type: array
+                        required:
+                        - cidr
+                        type: object
+                      type: array
+                  type: object
+                type: array
+              ingress:
+                description: Ingress is the list of ingress rules
+                items:
+                  properties:
+                    from:
+                      description: From is the list of network IP/CIDR addresses
+                      items:
+                        properties:
+                          cidr:
+                            description: CIDR specifies the network address(es) of
+                              the endpoint.
+                            type: string
+                          except:
+                            description: Except is the exceptions to the CIDR ranges
+                              mentioned above. The exception must be within the specified
+                              CIDR range.
+                            items:
+                              type: string
+                            type: array
+                        required:
+                        - cidr
+                        type: object
+                      type: array
+                    ports:
+                      description: Ports is the list of ports
+                      items:
+                        description: Port contains information about the transport
+                          port/protocol
+                        properties:
+                          endPort:
+                            description: Endport specifies the port range port to
+                              endPort port must be defined and an integer, endPort
+                              > port
+                            format: int32
+                            type: integer
+                          port:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Port specifies the numerical or named port
+                              for the protocol. If empty, applies to all ports.
+                            x-kubernetes-int-or-string: true
+                          protocol:
+                            description: Protocol specifies the transport protocol,
+                              default TCP
+                            enum:
+                            - TCP
+                            - UDP
+                            type: string
+                        type: object
+                      type: array
+                  type: object
+                type: array
+              podSelector:
+                description: PodSelector is the podSeletor from the policy resource
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: A label selector requirement is a selector that
+                        contains values, a key, and an operator that relates the key
+                        and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: operator represents a key's relationship to
+                            a set of values. Valid operators are In, NotIn, Exists
+                            and DoesNotExist.
+                          type: string
+                        values:
+                          description: values is an array of string values. If the
+                            operator is In or NotIn, the values array must be non-empty.
+                            If the operator is Exists or DoesNotExist, the values
+                            array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: matchLabels is a map of {key,value} pairs. A single
+                      {key,value} in the matchLabels map is equivalent to an element
+                      of matchExpressions, whose key field is "key", the operator
+                      is "In", and the values array contains only "value". The requirements
+                      are ANDed.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+              podSelectorEndpoints:
+                description: PodEndPoints is the list of IP addresses this policy
+                  applies to
+                items:
+                  type: string
+                type: array
+              policyRef:
+                description: policyRef is a reference to the Kubernetes Policy resource.
+                properties:
+                  name:
+                    description: Name is the name of the Policy
+                    type: string
+                  namespace:
+                    description: Port is the port of the ServicePort.
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              policyType:
+                description: PolicyType is the type of the policy, ingress or egress
+                type: string
+            required:
+            - podSelector
+            - podSelectorEndpoints
+            - policyRef
+            type: object
+          status:
+            description: PolicyEndpointsStatus defines the observed state of PolicyEndpoints
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
