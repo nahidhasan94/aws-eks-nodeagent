@@ -1,5 +1,5 @@
-# nodeagent
-// TODO(user): Add simple overview of use/purpose
+# aws-eks-nodeagent
+EKS Node agent is responsible for managing and enforcing configured Network policies on the cluster. Node agent relies on eBPF probes to enforce the policies.
 
 ## Description
 // TODO(user): An in-depth paragraph about your project and overview of use
@@ -21,10 +21,10 @@ kubectl apply -f config/samples/
 make docker-build docker-push IMG=<some-registry>/nodeagent:tag
 ```
 
-3. Deploy the controller to the cluster with the image specified by `IMG`:
+3. Deploy the controller to the cluster with the image specified by `IMAGE_NAME`:
 
 ```sh
-make deploy IMG=<some-registry>/nodeagent:tag
+make deploy IMAGE_NAME=<some-registry>/nodeagent:tag
 ```
 
 ### Uninstall CRDs
