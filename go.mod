@@ -1,4 +1,4 @@
-module github.com/achevuru/aws-eks-nodeagent
+module github.com/aws/aws-eks-nodeagent
 
 go 1.18
 
