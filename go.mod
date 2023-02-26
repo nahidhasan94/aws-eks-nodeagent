@@ -1,4 +1,4 @@
-module nodeagent/aws
+module github.com/aws/aws-eks-nodeagent
 
 go 1.18
 
