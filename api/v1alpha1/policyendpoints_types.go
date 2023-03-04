@@ -73,7 +73,19 @@ type EgressRule struct {
 	// Ports is the list of ports
 	Ports []Port `json:"ports,omitempty"`
 	// To is the list of network IP/CIDR addresses
-	To []NetworkPeer `json:"from,omitempty"`
+	To []NetworkPeer `json:"to,omitempty"`
+}
+
+// PodEndpoint defines the pod endpoint information
+type PodEndpoint struct {
+	// HostIP is the IP address of the host the pod is currently running on
+	HostIP NetworkAddress `json:"hostIP"`
+	// PodIP is the IP address of the pod
+	PodIP NetworkAddress `json:"podIP"`
+	// Name is the pod name
+	Name string `json:"name"`
+	// Namespace is the pod namespace
+	Namespace string `json:"namespace"`
 }
 
 // PolicyEndpointsSpec defines the desired state of PolicyEndpoints
@@ -81,9 +93,9 @@ type PolicyEndpointsSpec struct {
 	// PodSelector is the podSeletor from the policy resource
 	PodSelector *metav1.LabelSelector `json:"podSelector"`
 
-	// PodSelectorEndpoints is the resolved pod addresses corresponding
-	// to the podSelector
-	PodSelectorEndpoints []NetworkAddress `json:"podSelectorEndpoints"`
+	// PodSelectorEndpoints contains information about the pods
+	// matching the podSelector
+	PodSelectorEndpoints []PodEndpoint `json:"podSelectorEndpoints"`
 
 	// policyRef is a reference to the Kubernetes Policy resource.
 	PolicyRef PolicyReference `json:"policyRef"`

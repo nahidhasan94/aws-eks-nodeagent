@@ -110,10 +110,21 @@ struct bpf_elf_map SEC("maps") egress_ifindex = {
 };
 */
 
+struct lpm_trie_key {
+    __u32 prefixlen;
+    __u32 ip;
+};
+
+struct lpm_trie_val {
+    __u32 protocol;
+    __u32 start_port;
+    __u32 end_port;
+};
+
 struct bpf_map_def_pvt SEC("maps") ingress_map = {
     .type = BPF_MAP_TYPE_LPM_TRIE,
-    .key_size =sizeof(__u64),
-    .value_size = sizeof(__u32),
+    .key_size =sizeof(struct lpm_trie_key),
+    .value_size = sizeof(struct lpm_trie_val),
     .max_entries = 100,
     .map_flags = BPF_F_NO_PREALLOC,
     .pinning = PIN_GLOBAL_NS,

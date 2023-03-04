@@ -39,25 +39,6 @@ spec:
                 description: Egress is the list of egress rules
                 items:
                   properties:
-                    from:
-                      description: To is the list of network IP/CIDR addresses
-                      items:
-                        properties:
-                          cidr:
-                            description: CIDR specifies the network address(es) of
-                              the endpoint.
-                            type: string
-                          except:
-                            description: Except is the exceptions to the CIDR ranges
-                              mentioned above. The exception must be within the specified
-                              CIDR range.
-                            items:
-                              type: string
-                            type: array
-                        required:
-                        - cidr
-                        type: object
-                      type: array
                     ports:
                       description: Ports is the list of ports
                       items:
@@ -84,6 +65,25 @@ spec:
                             - TCP
                             - UDP
                             type: string
+                        type: object
+                      type: array
+                    to:
+                      description: To is the list of network IP/CIDR addresses
+                      items:
+                        properties:
+                          cidr:
+                            description: CIDR specifies the network address(es) of
+                              the endpoint.
+                            type: string
+                          except:
+                            description: Except is the exceptions to the CIDR ranges
+                              mentioned above. The exception must be within the specified
+                              CIDR range.
+                            items:
+                              type: string
+                            type: array
+                        required:
+                        - cidr
                         type: object
                       type: array
                   type: object
@@ -187,10 +187,30 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               podSelectorEndpoints:
-                description: PodSelectorEndpoints is the resolved pod addresses corresponding
-                  to the podSelector
+                description: PodSelectorEndpoints contains information about the pods
+                  matching the podSelector
                 items:
-                  type: string
+                  description: PodEndpoint defines the pod endpoint information
+                  properties:
+                    hostIP:
+                      description: HostIP is the IP address of the host the pod is
+                        currently running on
+                      type: string
+                    name:
+                      description: Name is the pod name
+                      type: string
+                    namespace:
+                      description: Namespace is the pod namespace
+                      type: string
+                    podIP:
+                      description: PodIP is the IP address of the pod
+                      type: string
+                  required:
+                  - hostIP
+                  - name
+                  - namespace
+                  - podIP
+                  type: object
                 type: array
               policyRef:
                 description: policyRef is a reference to the Kubernetes Policy resource.

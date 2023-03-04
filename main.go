@@ -31,8 +31,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	policyk8sawsv1 "nodeagent/aws/api/v1alpha1"
-	"nodeagent/aws/controllers"
+	policyk8sawsv1 "github.com/achevuru/aws-eks-nodeagent/api/v1alpha1"
+	"github.com/achevuru/aws-eks-nodeagent/controllers"
 	//+kubebuilder:scaffold:imports
 )
 

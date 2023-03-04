@@ -5,10 +5,11 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/achevuru/aws-eks-nodeagent/api/v1alpha1"
 	"github.com/go-logr/logr"
 	goebpf "github.com/jayanthvn/pure-gobpf/pkg/ebpf"
 	goelf "github.com/jayanthvn/pure-gobpf/pkg/elfparser"
-	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"net"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"strings"
@@ -16,11 +17,9 @@ import (
 	"unsafe"
 )
 
-//"k8s.aws/aws-vpc-policy-controller/pkg/k8s"
-
 type BpfClient interface {
-	AttacheBPFProbes(pod *corev1.Pod, policyEndpoint string, ingress bool, egress bool) error
-	UpdateEbpfMap(bpfPgm goebpf.BPFProgram, cidrEntries []string) error
+	AttacheBPFProbes(pod types.NamespacedName, policyEndpoint string, ingress bool, egress bool) error
+	UpdateEbpfMap(bpfPgm goebpf.BPFProgram, firewallRules []EbpfFirewallRules) error
 }
 
 func NewBpfClient(bpfProgMap *sync.Map, policyEndpointIngressMap *sync.Map,
@@ -42,7 +41,7 @@ type bpfClient struct {
 	logger                   logr.Logger
 }
 
-func (l *bpfClient) AttacheBPFProbes(pod *corev1.Pod, policyEndpoint string, ingress bool, egress bool) error {
+func (l *bpfClient) AttacheBPFProbes(pod types.NamespacedName, policyEndpoint string, ingress bool, egress bool) error {
 	// We attach the TC probes to the hostVeth interface of the pod. Derive the hostVeth
 	// name from the Name and Namespace of the Pod.
 	// Note: The below naming convention is tied to VPC CNI and isn't meant to be generic
@@ -143,44 +142,74 @@ func (l *bpfClient) attachEgressBPFProbe(hostVethName string, policyEndpoint str
 	return progFD, nil
 }
 
-func (l *bpfClient) UpdateEbpfMap(bpfPgm goebpf.BPFProgram, cidrEntries []string) error {
+type EbpfFirewallRules struct {
+	IPCidr []v1alpha1.NetworkPeer
+	L4Info []v1alpha1.Port
+}
 
-	value, _ := l.bpfProgMap.Load(bpfPgm.ProgFD)
-	mapFD := value.(int)
+func (l *bpfClient) UpdateEbpfMap(bpfPgm goebpf.BPFProgram, firewallRules []EbpfFirewallRules) error {
+
+	cacheValue, _ := l.bpfProgMap.Load(bpfPgm.ProgFD)
+	mapFD := cacheValue.(int)
 	l.logger.Info("Update Map", "FD:", mapFD)
-	for _, addr := range cidrEntries {
-		if !strings.Contains(addr, "/") {
-			addr += "/32"
-		}
-		l.logger.Info("adding to ingress_map", "addr", addr)
-		_, toAllow, _ := net.ParseCIDR(addr)
-		l.logger.Info("parsed", "addr", toAllow)
-		key := toKey(*toAllow)
-		index := 0
-		err := bpfPgm.UpdateMapEntry(uintptr(unsafe.Pointer(&key[0])), uintptr(unsafe.Pointer(&index)),
-			uint32(mapFD))
-		if err != nil {
-			l.logger.Info("BPF map update failed", "error: ", err)
+
+	for _, firewallRule := range firewallRules {
+		for _, l4Info := range firewallRule.L4Info {
+			value := l.toValue(l4Info)
+			for _, addr := range firewallRule.IPCidr {
+				if !strings.Contains(string(addr.CIDR), "/") {
+					addr.CIDR += "/32"
+				}
+				l.logger.Info("adding to ingress_map", "addr", addr)
+				_, mapKey, _ := net.ParseCIDR(string(addr.CIDR))
+				l.logger.Info("parsed", "addr", mapKey)
+				key := l.toKey(*mapKey)
+				//index := 0
+				err := bpfPgm.UpdateMapEntry(uintptr(unsafe.Pointer(&key[0])), uintptr(unsafe.Pointer(&value[0])),
+					uint32(mapFD))
+				if err != nil {
+					l.logger.Info("BPF map update failed", "error: ", err)
+				}
+			}
+
 		}
 	}
 
 	return nil
 }
 
-func (l *bpfClient) getHostVethName(pod *corev1.Pod) string {
+func (l *bpfClient) getHostVethName(pod types.NamespacedName) string {
 	h := sha1.New()
 	h.Write([]byte(fmt.Sprintf("%s.%s", pod.Namespace, pod.Name)))
 	return fmt.Sprintf("%s%s", "eni", hex.EncodeToString(h.Sum(nil))[:11])
 }
 
-func toKey(n net.IPNet) []byte {
+func (l *bpfClient) toKey(n net.IPNet) []byte {
 	prefixLen, _ := n.Mask.Size()
 
 	// Key format: Prefix length (4 bytes) followed by 4 byte IP
-	key := make([]byte, 4+4)
+	key := make([]byte, 8)
 
 	binary.LittleEndian.PutUint32(key[0:4], uint32(prefixLen))
 	copy(key[4:], n.IP)
 
 	return key
+}
+
+func (l *bpfClient) toValue(l4Info v1alpha1.Port) []byte {
+	protocol := 1 //string(*l4Info.Protocol)
+	startPort := (*l4Info.Port).IntValue()
+	endPort := 0 //*l4Info.EndPort
+
+	l.logger.Info("L4 values: ", "protocol: ", protocol, "startPort: ", startPort, "endPort: ", endPort)
+	// Key format: Prefix length (4 bytes) followed by 4 byte IP
+	value := make([]byte, 12)
+
+	binary.LittleEndian.PutUint32(value[0:4], uint32(protocol))
+	binary.LittleEndian.PutUint32(value[4:8], uint32(startPort))
+	binary.LittleEndian.PutUint32(value[8:12], uint32(endPort))
+
+	//copy(value[4:], n.IP)
+
+	return value
 }

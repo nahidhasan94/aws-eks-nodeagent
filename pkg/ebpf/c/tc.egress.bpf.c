@@ -1,6 +1,7 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
 
 #define BPF_F_NO_PREALLOC 1
 #define ETH_HLEN	14
@@ -110,10 +111,21 @@ struct bpf_elf_map SEC("maps") egress_ifindex = {
 };
 */
 
+struct lpm_trie_key {
+    __u32 prefixlen;
+    __u32 ip;
+};
+
+struct lpm_trie_val {
+    __u32 protocol;
+    __u32 start_port;
+    __u32 end_port;
+};
+
 struct bpf_map_def_pvt SEC("maps") egress_map = {
     .type = BPF_MAP_TYPE_LPM_TRIE,
-    .key_size =sizeof(__u64),
-    .value_size = sizeof(__u32),
+    .key_size =sizeof(struct lpm_trie_key),
+    .value_size = sizeof(struct lpm_trie_val),
     .max_entries = 100,
     .map_flags = BPF_F_NO_PREALLOC,
     .pinning = PIN_GLOBAL_NS,
@@ -124,6 +136,7 @@ SEC("tc_cls")
 int handle_egress(struct __sk_buff *skb)
 {
 	struct keystruct trie_key;
+	struct lpm_trie_val *trie_val;
     void *data_end = (void *)(long)skb->data_end;
   	void *data = (void *)(long)skb->data;
   	
@@ -151,8 +164,19 @@ int handle_egress(struct __sk_buff *skb)
 		bpf_printk("1 byte %d", trie_key.ip[1]);
 		bpf_printk("2 byte %d", trie_key.ip[2]);
 		bpf_printk("3 byte %d", trie_key.ip[3]);
-		void *val = bpf_map_lookup_elem(&egress_map, &trie_key);
-		return val == NULL ? BPF_DROP : BPF_OK;
+		trie_val = bpf_map_lookup_elem(&egress_map, &trie_key);
+
+		if (trie_val == NULL) {
+            return BPF_DROP;
+        }
+
+		//bpf_probe_read(&trie_val, sizeof(struct lpm_trie_val), val);
+
+        bpf_printk("Flow Protocol: %d", trie_val->protocol);
+        bpf_printk("Flow Start Port: %d", trie_val->start_port);
+        bpf_printk("Flow End Port: %d", trie_val->end_port);
+
+		//return val == NULL ? BPF_DROP : BPF_OK;
 	}
         return BPF_OK;
 }

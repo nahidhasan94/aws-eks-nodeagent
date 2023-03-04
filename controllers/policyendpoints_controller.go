@@ -18,12 +18,11 @@ package controllers
 
 import (
 	"context"
-	corev1 "k8s.io/api/core/v1"
+	policyk8sawsv1 "github.com/achevuru/aws-eks-nodeagent/api/v1alpha1"
+	"github.com/achevuru/aws-eks-nodeagent/pkg/ebpf"
+	"github.com/achevuru/aws-eks-nodeagent/pkg/utils/imds"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	policyk8sawsv1 "nodeagent/aws/api/v1alpha1"
-	"nodeagent/aws/pkg/ebpf"
-	"nodeagent/aws/pkg/utils/imds"
 	"sync"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -92,100 +91,65 @@ func (r *PolicyEndpointsReconciler) reconcile(ctx context.Context, req ctrl.Requ
 	}
 	r.Log.Info("Successfully derived Policy Endpoint spec for", "name", req.NamespacedName.Name)
 
-	/*
-		if !policyEndpoint.DeletionTimestamp.IsZero() {
-			return r.cleanupPolicyEndpoints(ctx, policyEndpoint)
-		}
-	*/
-
 	return r.reconcilePolicyEndpoint(ctx, policyEndpoint, req)
 }
 
 func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 	policyEndpoint *policyk8sawsv1.PolicyEndpoints, req ctrl.Request) error {
 	ingress, egress := false, false
+
 	//Derive Ingress IPs from the PolicyEndpoint
-	ingressCIDRs, egressCIDRs, err := r.deriveIngressAndEgressCIDRs(ctx, policyEndpoint)
+	//ingressCIDRs, egressCIDRs, err := r.deriveIngressAndEgressCIDRs(ctx, policyEndpoint)
+	ingressRules, egressRules, err := r.deriveIngressAndEgressFirewallRules(ctx, policyEndpoint)
 	if err != nil {
 		r.Log.Info("Error Parsing policy Endpoint resource", "name:", req.NamespacedName.Name)
 	}
 
-	if len(ingressCIDRs) > 0 {
+	if len(ingressRules) > 0 {
 		ingress = true
 	}
 
-	if len(egressCIDRs) > 0 {
+	if len(egressRules) > 0 {
 		egress = true
 	}
 
 	//1.Derive Pod IPs from Pod Selector field and obtain Pod(s) hostVeth
-	//TODO: Maintain a Cache and restore it from ipam.json on restarts
 	//podSelectorIPs := policyEndpoint.Spec.PodEndPoints
-	//var targetPodNamespacedName []types.NamespacedName
-	targetPodList := &corev1.PodList{}
-
-	listOptions := client.ListOptions{
-		Namespace: req.NamespacedName.Namespace,
-	}
 
 	// For now, get pods under the namespace of PolicyEndpoint resource we're reconciling on
 	// and filter based on the Pod selector. If PodSelector is empty, then the policy applies to
 	// all the pods under the namespace
-	r.Log.Info("Get Pods under ", "namespace", req.NamespacedName.Name)
-	//targetPodSelector, _ := metav1.LabelSelectorAsSelector(policyEndpoint.Spec.PodSelector)
-
-	/*
-			labelSelector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"k8s-app": "aws-node",
-				},
-			})
-		  podEndpoints :=
-	*/
-
-	//Get Pod's name and namespace from ipam.json and derive pod's hostVeth
-	r.K8sClient.List(ctx, targetPodList, &listOptions)
-	r.Log.Info("Got Pods under ", "namespace", req.NamespacedName.Name)
+	r.Log.Info("Get Pods from the policy endpoint resource: ", "in namespace", req.NamespacedName.Name)
+	//r.K8sClient.List(ctx, targetPodList, &listOptions)
 	r.Log.Info("Node IP - ", "Node IP:", r.nodeIP)
 
-	//Loop over Pod IPs and grab the pods with IPs under selector list
-	var matchingPod types.NamespacedName
-	for _, pod := range targetPodList.Items {
-		r.Log.Info("Pod: ", "name:", pod.Name, "Node IP:", pod.Status.HostIP)
-		/*
-			if !targetPodSelector.Matches(labels.Set(pod.Labels)) {
-				continue
-			}
-		*/
-		if pod.Status.HostIP == r.nodeIP {
-			r.Log.Info("Found matching pod", "details", pod.Name)
-			matchingPod.Namespace = pod.Namespace
-			matchingPod.Name = pod.Name
-			//targetPodNamespacedName = append(targetPodNamespacedName, matchingPod)
-			policyEndpointIdentifier := req.NamespacedName.Namespace + req.NamespacedName.Name
-			err := r.ebpfClient.AttacheBPFProbes(&pod, policyEndpointIdentifier, ingress, egress)
-			if err != nil {
-				r.Log.Info("Attaching eBPF probe failed for", "pod:", pod.Name, "in namespace", pod.Namespace)
-			}
-			r.Log.Info("Successfully attached required eBPF probes for", "pod:", pod.Name, "in namespace", pod.Namespace)
+	targetPods, err := r.deriveTargetPods(ctx, policyEndpoint)
+	//Loop over target pods and setup/configure eBPF probes/maps
+	for _, pod := range targetPods {
+		r.Log.Info("Pod: ", "name:", pod.Name, "namespace:", pod.Namespace)
 
-			ingressValue, ok := r.policyEndpointIngressMap.Load(policyEndpointIdentifier)
-			if ok {
-				ingressBpfPgm := ingressValue.(goebpf.BPFProgram)
-				//Update Ingress eBPF Map
-				if err = r.ebpfClient.UpdateEbpfMap(ingressBpfPgm, ingressCIDRs); err != nil {
-					r.Log.Info("Updating Ingress eBPF map failed for", "pod:", pod.Name, "in namespace", pod.Namespace)
-				}
+		policyEndpointIdentifier := req.NamespacedName.Namespace + req.NamespacedName.Name
+		err := r.ebpfClient.AttacheBPFProbes(pod, policyEndpointIdentifier, ingress, egress)
+		if err != nil {
+			r.Log.Info("Attaching eBPF probe failed for", "pod:", pod.Name, "in namespace", pod.Namespace)
+		}
+		r.Log.Info("Successfully attached required eBPF probes for", "pod:", pod.Name, "in namespace", pod.Namespace)
 
+		ingressValue, ok := r.policyEndpointIngressMap.Load(policyEndpointIdentifier)
+		if ok {
+			ingressBpfPgm := ingressValue.(goebpf.BPFProgram)
+			//Update Ingress eBPF Map
+			if err = r.ebpfClient.UpdateEbpfMap(ingressBpfPgm, ingressRules); err != nil {
+				r.Log.Info("Updating Ingress eBPF map failed for", "pod:", pod.Name, "in namespace", pod.Namespace)
 			}
+		}
 
-			egressValue, ok := r.policyEndpointEgressMap.Load(policyEndpointIdentifier)
-			if ok {
-				egressBpfPgm := egressValue.(goebpf.BPFProgram)
-				//Update Egress eBPF Map
-				if err = r.ebpfClient.UpdateEbpfMap(egressBpfPgm, egressCIDRs); err != nil {
-					r.Log.Info("Updating Egress eBPF map failed for", "pod:", pod.Name, "in namespace", pod.Namespace)
-				}
+		egressValue, ok := r.policyEndpointEgressMap.Load(policyEndpointIdentifier)
+		if ok {
+			egressBpfPgm := egressValue.(goebpf.BPFProgram)
+			//Update Egress eBPF Map
+			if err = r.ebpfClient.UpdateEbpfMap(egressBpfPgm, egressRules); err != nil {
+				r.Log.Info("Updating Egress eBPF map failed for", "pod:", pod.Name, "in namespace", pod.Namespace)
 			}
 		}
 	}
@@ -193,23 +157,40 @@ func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 	return nil
 }
 
-func (r *PolicyEndpointsReconciler) deriveIngressAndEgressCIDRs(ctx context.Context,
-	policyEndpoint *policyk8sawsv1.PolicyEndpoints) ([]string, []string, error) {
-	var ingressCIDRs, egressCIDRs []string
+func (r *PolicyEndpointsReconciler) deriveIngressAndEgressFirewallRules(ctx context.Context,
+	policyEndpoint *policyk8sawsv1.PolicyEndpoints) ([]ebpf.EbpfFirewallRules, []ebpf.EbpfFirewallRules, error) {
+	var ingressRules, egressRules []ebpf.EbpfFirewallRules
 
 	for _, cidrList := range policyEndpoint.Spec.Ingress {
-		for _, cidr := range cidrList.From {
-			ingressCIDRs = append(ingressCIDRs, string(cidr.CIDR))
-		}
+		ingressRules = append(ingressRules,
+			ebpf.EbpfFirewallRules{
+				IPCidr: cidrList.From,
+				L4Info: cidrList.Ports,
+			})
 	}
 
 	for _, cidrList := range policyEndpoint.Spec.Egress {
-		for _, cidr := range cidrList.To {
-			egressCIDRs = append(egressCIDRs, string(cidr.CIDR))
-		}
+		egressRules = append(egressRules,
+			ebpf.EbpfFirewallRules{
+				IPCidr: cidrList.To,
+				L4Info: cidrList.Ports,
+			})
 	}
 
-	return ingressCIDRs, egressCIDRs, nil
+	return ingressRules, egressRules, nil
+}
+
+func (r *PolicyEndpointsReconciler) deriveTargetPods(ctx context.Context,
+	policyEndpoint *policyk8sawsv1.PolicyEndpoints) ([]types.NamespacedName, error) {
+	var targetPods []types.NamespacedName
+
+	for _, pod := range policyEndpoint.Spec.PodSelectorEndpoints {
+		if r.nodeIP == string(pod.HostIP) {
+			r.Log.Info("Found a matching Pod: ", "name: ", pod.Name, "namespace: ", pod.Namespace)
+			targetPods = append(targetPods, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace})
+		}
+	}
+	return targetPods, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
