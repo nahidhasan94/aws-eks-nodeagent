@@ -20,6 +20,7 @@ import (
 	"context"
 	policyk8sawsv1 "github.com/achevuru/aws-eks-nodeagent/api/v1alpha1"
 	"github.com/achevuru/aws-eks-nodeagent/pkg/ebpf"
+	"github.com/achevuru/aws-eks-nodeagent/pkg/utils"
 	"github.com/achevuru/aws-eks-nodeagent/pkg/utils/imds"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -56,7 +57,10 @@ type PolicyEndpointsReconciler struct {
 	policyEndpointIngressMap sync.Map
 	// Maps PolicyEndpoint resource to Egress eBPF Program FD
 	policyEndpointEgressMap sync.Map
-	ebpfClient              ebpf.BpfClient
+	// Maps PolicyEndpoint resource with a list of pods that are already serviced
+	policyEndpointSelectorMap sync.Map
+
+	ebpfClient ebpf.BpfClient
 
 	Log logr.Logger
 }
@@ -96,7 +100,8 @@ func (r *PolicyEndpointsReconciler) reconcile(ctx context.Context, req ctrl.Requ
 
 func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 	policyEndpoint *policyk8sawsv1.PolicyEndpoints, req ctrl.Request) error {
-	ingress, egress := false, false
+	ingress, egress, existingPod := false, false, false
+	var podsList []string
 
 	//Derive Ingress IPs from the PolicyEndpoint
 	//ingressCIDRs, egressCIDRs, err := r.deriveIngressAndEgressCIDRs(ctx, policyEndpoint)
@@ -113,14 +118,10 @@ func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 		egress = true
 	}
 
-	//1.Derive Pod IPs from Pod Selector field and obtain Pod(s) hostVeth
-	//podSelectorIPs := policyEndpoint.Spec.PodEndPoints
-
-	// For now, get pods under the namespace of PolicyEndpoint resource we're reconciling on
+	// Derive pods
 	// and filter based on the Pod selector. If PodSelector is empty, then the policy applies to
 	// all the pods under the namespace
 	r.Log.Info("Get Pods from the policy endpoint resource: ", "in namespace", req.NamespacedName.Name)
-	//r.K8sClient.List(ctx, targetPodList, &listOptions)
 	r.Log.Info("Node IP - ", "Node IP:", r.nodeIP)
 
 	targetPods, err := r.deriveTargetPods(ctx, policyEndpoint)
@@ -129,13 +130,31 @@ func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 		r.Log.Info("Pod: ", "name:", pod.Name, "namespace:", pod.Namespace)
 
 		policyEndpointIdentifier := req.NamespacedName.Namespace + req.NamespacedName.Name
-		err := r.ebpfClient.AttacheBPFProbes(pod, policyEndpointIdentifier, ingress, egress)
+		podIdentifier, _ := utils.GetPodIdentifier(pod.Name, pod.Namespace)
+		r.Log.Info("Map Identifier: ", "Pod Identifer: ", podIdentifier)
+
+		if knownPodsList, ok := r.policyEndpointSelectorMap.Load(policyEndpointIdentifier); ok {
+			for _, podID := range knownPodsList.([]string) {
+				if podID == pod.Name+pod.Namespace {
+					existingPod = true
+					break
+				}
+			}
+			podsList = knownPodsList.([]string)
+		}
+
+		if existingPod {
+			r.Log.Info("Existing pod against this PE resource. Nothing to do. Pod: ", "name:", pod.Name, "namespace:", pod.Namespace)
+			continue
+		}
+
+		err := r.ebpfClient.AttacheBPFProbes(pod, podIdentifier, ingress, egress)
 		if err != nil {
 			r.Log.Info("Attaching eBPF probe failed for", "pod:", pod.Name, "in namespace", pod.Namespace)
 		}
 		r.Log.Info("Successfully attached required eBPF probes for", "pod:", pod.Name, "in namespace", pod.Namespace)
 
-		ingressValue, ok := r.policyEndpointIngressMap.Load(policyEndpointIdentifier)
+		ingressValue, ok := r.policyEndpointIngressMap.Load(podIdentifier)
 		if ok {
 			ingressBpfPgm := ingressValue.(goebpf.BPFProgram)
 			//Update Ingress eBPF Map
@@ -144,7 +163,7 @@ func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 			}
 		}
 
-		egressValue, ok := r.policyEndpointEgressMap.Load(policyEndpointIdentifier)
+		egressValue, ok := r.policyEndpointEgressMap.Load(podIdentifier)
 		if ok {
 			egressBpfPgm := egressValue.(goebpf.BPFProgram)
 			//Update Egress eBPF Map
@@ -152,6 +171,9 @@ func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 				r.Log.Info("Updating Egress eBPF map failed for", "pod:", pod.Name, "in namespace", pod.Namespace)
 			}
 		}
+		podsList = append(podsList, pod.Name+pod.Namespace)
+		r.policyEndpointSelectorMap.Store(policyEndpointIdentifier, podsList)
+		existingPod = false
 	}
 
 	return nil
@@ -184,6 +206,8 @@ func (r *PolicyEndpointsReconciler) deriveTargetPods(ctx context.Context,
 	policyEndpoint *policyk8sawsv1.PolicyEndpoints) ([]types.NamespacedName, error) {
 	var targetPods []types.NamespacedName
 
+	// Pods are grouped by Host IP. Individual node agents will need to filter pods
+	// that have the same Host IP value as the node IP of the node where it is running.
 	for _, pod := range policyEndpoint.Spec.PodSelectorEndpoints {
 		if r.nodeIP == string(pod.HostIP) {
 			r.Log.Info("Found a matching Pod: ", "name: ", pod.Name, "namespace: ", pod.Namespace)

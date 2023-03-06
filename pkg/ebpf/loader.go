@@ -41,7 +41,7 @@ type bpfClient struct {
 	logger                   logr.Logger
 }
 
-func (l *bpfClient) AttacheBPFProbes(pod types.NamespacedName, policyEndpoint string, ingress bool, egress bool) error {
+func (l *bpfClient) AttacheBPFProbes(pod types.NamespacedName, podIdentifier string, ingress bool, egress bool) error {
 	// We attach the TC probes to the hostVeth interface of the pod. Derive the hostVeth
 	// name from the Name and Namespace of the Pod.
 	// Note: The below naming convention is tied to VPC CNI and isn't meant to be generic
@@ -49,37 +49,38 @@ func (l *bpfClient) AttacheBPFProbes(pod types.NamespacedName, policyEndpoint st
 	l.logger.Info("AttachIngressProbe for", "pod", pod.Name, " in namespace", pod.Namespace, " with hostVethName", hostVethName)
 
 	if ingress {
-		ingressProgFd, err := l.attachIngressBPFProbe(hostVethName, policyEndpoint)
+		ingressProgFd, err := l.attachIngressBPFProbe(hostVethName, podIdentifier)
 		if err != nil {
 			l.logger.Info("Failed to Attach Ingress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
 		}
 		l.logger.Info("Successfully attached Ingress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
 		ingressProgEntry := goebpf.BPFProgram{ingressProgFd, ""}
-		l.policyEndpointIngressMap.Store(policyEndpoint, ingressProgEntry)
+		l.policyEndpointIngressMap.Store(podIdentifier, ingressProgEntry)
 	}
 
 	if egress {
-		egressProgFd, err := l.attachEgressBPFProbe(hostVethName, policyEndpoint)
+		egressProgFd, err := l.attachEgressBPFProbe(hostVethName, podIdentifier)
 		if err != nil {
 			l.logger.Info("Failed to Attach Ingress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
 		}
 		l.logger.Info("Successfully attached Egress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
 		egressProgEntry := goebpf.BPFProgram{egressProgFd, ""}
-		l.policyEndpointEgressMap.Store(policyEndpoint, egressProgEntry)
+		l.policyEndpointEgressMap.Store(podIdentifier, egressProgEntry)
 	}
 
 	return nil
 }
 
-func (l *bpfClient) attachIngressBPFProbe(hostVethName string, policyEndpoint string) (int, error) {
+func (l *bpfClient) attachIngressBPFProbe(hostVethName string, podIdentifier string) (int, error) {
 	// We will re-use the same eBPF program instance for pods belonging to same replicaset
 	// Check if we've already loaded an ELF file for this PolicyEndpoint resource and re-use
 	// if present, otherwise load a new instance and attach it
 	var progFD, mapFD int
-	value, ok := l.policyEndpointIngressMap.Load(policyEndpoint)
+	value, ok := l.policyEndpointIngressMap.Load(podIdentifier)
 	if ok {
 		l.logger.Info("Found an existing instance")
-		progFD = value.(int)
+		ingressEbpfPgm := value.(goebpf.BPFProgram)
+		progFD = ingressEbpfPgm.ProgFD
 	} else { //!ok
 		l.logger.Info("Load new instance of the eBPF program")
 		// Load a new instance of the ingress program
@@ -91,9 +92,9 @@ func (l *bpfClient) attachIngressBPFProbe(hostVethName string, policyEndpoint st
 		progFD = (*elfInfo).Section["tc_cls"].Programs["handle_egress"].ProgFD
 		mapFD = int((*elfInfo).Maps["egress_map"].MapFD)
 
-		progEntry := goebpf.BPFProgram{progFD, ""}
+		//progEntry := goebpf.BPFProgram{progFD, ""}
 		l.logger.Info("Ingress Prog Load Succeeded", "progFD for handle_egress: ", progFD, "mapFD: ", mapFD)
-		l.policyEndpointIngressMap.Store(policyEndpoint, progEntry)
+		//l.policyEndpointIngressMap.Store(podIdentifier, progEntry)
 		l.bpfProgMap.Store(progFD, mapFD)
 	}
 
@@ -106,16 +107,17 @@ func (l *bpfClient) attachIngressBPFProbe(hostVethName string, policyEndpoint st
 	return progFD, nil
 }
 
-func (l *bpfClient) attachEgressBPFProbe(hostVethName string, policyEndpoint string) (int, error) {
+func (l *bpfClient) attachEgressBPFProbe(hostVethName string, podIdentifier string) (int, error) {
 	// We will re-use the same eBPF program instance for pods belonging to same replicaset
 	// Check if we've already loaded an ELF file for this PolicyEndpoint resource and re-use
 	// if present, otherwise load a new instance and attach it
 
 	var progFD, mapFD int
-	value, ok := l.policyEndpointEgressMap.Load(policyEndpoint)
+	value, ok := l.policyEndpointEgressMap.Load(podIdentifier)
 	if ok {
 		l.logger.Info("Found an existing instance")
-		progFD = value.(int)
+		egressEbpfPgm := value.(goebpf.BPFProgram)
+		progFD = egressEbpfPgm.ProgFD
 	} else { //!ok
 		l.logger.Info("Load new instance of the eBPF program")
 		// Load a new instance of the ingress program
@@ -127,9 +129,9 @@ func (l *bpfClient) attachEgressBPFProbe(hostVethName string, policyEndpoint str
 		progFD = (*elfInfo).Section["tc_cls"].Programs["handle_ingress"].ProgFD
 		mapFD = int((*elfInfo).Maps["ingress_map"].MapFD)
 
-		progEntry := goebpf.BPFProgram{progFD, ""}
+		//progEntry := goebpf.BPFProgram{progFD, ""}
 		l.logger.Info("Egress Prog Load Succeeded", "progFD for handle_ingress: ", progFD, " mapFD: ", mapFD)
-		l.policyEndpointEgressMap.Store(policyEndpoint, progEntry)
+		//l.policyEndpointEgressMap.Store(podIdentifier, progEntry)
 		l.bpfProgMap.Store(progFD, mapFD)
 	}
 
