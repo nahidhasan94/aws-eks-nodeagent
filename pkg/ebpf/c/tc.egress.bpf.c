@@ -137,6 +137,9 @@ int handle_egress(struct __sk_buff *skb)
 {
 	struct keystruct trie_key;
 	struct lpm_trie_val *trie_val;
+	int l4port = 0;
+	//int htons_port = 0;
+	//int ntohs_port = 0;
     void *data_end = (void *)(long)skb->data_end;
   	void *data = (void *)(long)skb->data;
   	
@@ -147,13 +150,44 @@ int handle_egress(struct __sk_buff *skb)
   	if (ether->h_proto == 0x08U) {  // htons(ETH_P_IP) -> 0x08U
     		data += sizeof(*ether);
     		struct iphdr *ip = data;
+    		struct tcphdr *l4hdr = data + sizeof(struct iphdr);
     		if (data + sizeof(*ip) > data_end) {
       			return BPF_OK;
     		}
     		if (ip->version != 4) {
       			return BPF_OK;
     		}
+    		if (data + sizeof(*ip) + sizeof(*l4hdr) > data_end) {
+    		    return BPF_OK;
+    		}
+
 		bpf_printk("Dest addr %x", ip->daddr);
+		bpf_printk("Protocol in the IP Header: %d", ip->protocol);
+        bpf_printk("L4 Src Port: %d", l4hdr->source);
+
+
+        l4port = (((((unsigned short)(l4hdr->source) & 0xFF)) << 8) | (((unsigned short)(l4hdr->source) & 0xFF00) >> 8));
+        //ntohs_port = (((((unsigned short)(l4hdr->source) & 0xFF)) << 8) | (((unsigned short)(l4hdr->source) & 0xFF00) >> 8));
+
+        bpf_printk("L4 Src Port - ntohs: %d", l4port);
+        //bpf_printk("L4 Src Port - htons: %d", htons_port);
+      //  bpf_printk("L4 Dest Port: %d", l4hdr->dest);
+      //  bpf_printk("L4 Dest Port - be16 convert: %d", be16_to_cpu(l4hdr->dest));
+
+
+/*
+		if (ip->protocol == IPPROTO_TCP) {
+		    struct tcphdr *l4hdr = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
+		    l4port = l4hdr->source;
+		    bpf_printk("L4 Port: %d", l4port);
+		} else if (ip->protocol == IPPROTO_UDP) {
+		    struct udphdr *l4hdr = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
+		    l4port = l4hdr->source;
+		}
+		*/
+
+		//bpf_printk("Port: %d", tcph->source);
+
 		trie_key.prefix_len = 32;
 		trie_key.ip[0] = ip->daddr & 0xff;
 		trie_key.ip[1] = (ip->daddr >> 8) & 0xff;
@@ -170,11 +204,19 @@ int handle_egress(struct __sk_buff *skb)
             return BPF_DROP;
         }
 
-		//bpf_probe_read(&trie_val, sizeof(struct lpm_trie_val), val);
-
         bpf_printk("Flow Protocol: %d", trie_val->protocol);
         bpf_printk("Flow Start Port: %d", trie_val->start_port);
         bpf_printk("Flow End Port: %d", trie_val->end_port);
+
+
+        //if (((trie_val->protocol == ip->protocol) ||  (trie_val->protocol == 1))
+        if (trie_val->protocol == ip->protocol && l4port >= trie_val->start_port
+             && l4port <= trie_val->end_port) {
+            bpf_printk("Protocol and Port match %d; %d", trie_val->protocol, l4port);
+            return BPF_OK;
+        } else {
+            return BPF_DROP;
+        }
 
 		//return val == NULL ? BPF_DROP : BPF_OK;
 	}

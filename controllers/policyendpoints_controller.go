@@ -29,7 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	goebpf "github.com/jayanthvn/pure-gobpf/pkg/ebpf"
+	goelf "github.com/jayanthvn/pure-gobpf/pkg/elfparser"
 
 	"github.com/go-logr/logr"
 )
@@ -91,17 +91,38 @@ func (r *PolicyEndpointsReconciler) reconcile(ctx context.Context, req ctrl.Requ
 
 	r.Log.Info("Get Policy Endpoint spec for", "name", req.NamespacedName.Name)
 	if err := r.K8sClient.Get(ctx, req.NamespacedName, policyEndpoint); err != nil {
+		if err1 := client.IgnoreNotFound(err); err1 == nil {
+			return r.cleanUpPolicyEndpoint(ctx, policyEndpoint, req)
+		}
 		return client.IgnoreNotFound(err)
 	}
 	r.Log.Info("Successfully derived Policy Endpoint spec for", "name", req.NamespacedName.Name)
 
+	if !policyEndpoint.DeletionTimestamp.IsZero() {
+		return r.cleanUpPolicyEndpoint(ctx, policyEndpoint, req)
+	}
+
 	return r.reconcilePolicyEndpoint(ctx, policyEndpoint, req)
+}
+
+func (r *PolicyEndpointsReconciler) cleanUpPolicyEndpoint(ctx context.Context,
+	policyEndpoint *policyk8sawsv1.PolicyEndpoints, req ctrl.Request) error {
+
+	r.Log.Info("Clean Up PolicyEndpoint resources for", "name:", req.NamespacedName.Name)
+	policyEndpointIdentifier := req.NamespacedName.Namespace + req.NamespacedName.Name
+	if targetPods, ok := r.policyEndpointSelectorMap.Load(policyEndpointIdentifier); ok {
+		for _, targetPod := range targetPods.([]types.NamespacedName) {
+			r.ebpfClient.DetacheBPFProbes(targetPod, true, true)
+		}
+	}
+
+	return nil
 }
 
 func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 	policyEndpoint *policyk8sawsv1.PolicyEndpoints, req ctrl.Request) error {
 	ingress, egress, existingPod := false, false, false
-	var podsList []string
+	var podsList []types.NamespacedName
 
 	//Derive Ingress IPs from the PolicyEndpoint
 	//ingressCIDRs, egressCIDRs, err := r.deriveIngressAndEgressCIDRs(ctx, policyEndpoint)
@@ -134,13 +155,13 @@ func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 		r.Log.Info("Map Identifier: ", "Pod Identifer: ", podIdentifier)
 
 		if knownPodsList, ok := r.policyEndpointSelectorMap.Load(policyEndpointIdentifier); ok {
-			for _, podID := range knownPodsList.([]string) {
-				if podID == pod.Name+pod.Namespace {
+			for _, podID := range knownPodsList.([]types.NamespacedName) {
+				if podID.Name+podID.Namespace == pod.Name+pod.Namespace {
 					existingPod = true
 					break
 				}
 			}
-			podsList = knownPodsList.([]string)
+			podsList = knownPodsList.([]types.NamespacedName)
 		}
 
 		if existingPod {
@@ -156,22 +177,23 @@ func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 
 		ingressValue, ok := r.policyEndpointIngressMap.Load(podIdentifier)
 		if ok {
-			ingressBpfPgm := ingressValue.(goebpf.BPFProgram)
+			ingressBpfPgm := ingressValue.(*goelf.BPFParser)
 			//Update Ingress eBPF Map
-			if err = r.ebpfClient.UpdateEbpfMap(ingressBpfPgm, ingressRules); err != nil {
+			if err = r.ebpfClient.UpdateEbpfMap(ingressBpfPgm, egressRules, true); err != nil {
 				r.Log.Info("Updating Ingress eBPF map failed for", "pod:", pod.Name, "in namespace", pod.Namespace)
 			}
 		}
 
 		egressValue, ok := r.policyEndpointEgressMap.Load(podIdentifier)
 		if ok {
-			egressBpfPgm := egressValue.(goebpf.BPFProgram)
+			egressBpfPgm := egressValue.(*goelf.BPFParser)
 			//Update Egress eBPF Map
-			if err = r.ebpfClient.UpdateEbpfMap(egressBpfPgm, egressRules); err != nil {
+			if err = r.ebpfClient.UpdateEbpfMap(egressBpfPgm, ingressRules, false); err != nil {
 				r.Log.Info("Updating Egress eBPF map failed for", "pod:", pod.Name, "in namespace", pod.Namespace)
 			}
 		}
-		podsList = append(podsList, pod.Name+pod.Namespace)
+
+		podsList = append(podsList, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace})
 		r.policyEndpointSelectorMap.Store(policyEndpointIdentifier, podsList)
 		existingPod = false
 	}

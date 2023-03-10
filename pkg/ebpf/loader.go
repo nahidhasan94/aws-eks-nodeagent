@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/achevuru/aws-eks-nodeagent/api/v1alpha1"
+	"github.com/achevuru/aws-eks-nodeagent/pkg/utils"
 	"github.com/go-logr/logr"
 	goebpf "github.com/jayanthvn/pure-gobpf/pkg/ebpf"
 	goelf "github.com/jayanthvn/pure-gobpf/pkg/elfparser"
@@ -19,7 +20,8 @@ import (
 
 type BpfClient interface {
 	AttacheBPFProbes(pod types.NamespacedName, policyEndpoint string, ingress bool, egress bool) error
-	UpdateEbpfMap(bpfPgm goebpf.BPFProgram, firewallRules []EbpfFirewallRules) error
+	DetacheBPFProbes(pod types.NamespacedName, ingress bool, egress bool) error
+	UpdateEbpfMap(bpfPgm *goelf.BPFParser, firewallRules []EbpfFirewallRules, ingress bool) error
 }
 
 func NewBpfClient(bpfProgMap *sync.Map, policyEndpointIngressMap *sync.Map,
@@ -49,23 +51,49 @@ func (l *bpfClient) AttacheBPFProbes(pod types.NamespacedName, podIdentifier str
 	l.logger.Info("AttachIngressProbe for", "pod", pod.Name, " in namespace", pod.Namespace, " with hostVethName", hostVethName)
 
 	if ingress {
-		ingressProgFd, err := l.attachIngressBPFProbe(hostVethName, podIdentifier)
+		_, err := l.attachIngressBPFProbe(hostVethName, podIdentifier)
 		if err != nil {
 			l.logger.Info("Failed to Attach Ingress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
 		}
 		l.logger.Info("Successfully attached Ingress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
-		ingressProgEntry := goebpf.BPFProgram{ingressProgFd, ""}
-		l.policyEndpointIngressMap.Store(podIdentifier, ingressProgEntry)
+		//ingressProgEntry := goebpf.BPFProgram{ingressProgFd, ""}
+		//l.policyEndpointIngressMap.Store(podIdentifier, ingressProgEntry)
 	}
 
 	if egress {
-		egressProgFd, err := l.attachEgressBPFProbe(hostVethName, podIdentifier)
+		_, err := l.attachEgressBPFProbe(hostVethName, podIdentifier)
 		if err != nil {
-			l.logger.Info("Failed to Attach Ingress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
+			l.logger.Info("Failed to Attach Egress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
 		}
 		l.logger.Info("Successfully attached Egress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
-		egressProgEntry := goebpf.BPFProgram{egressProgFd, ""}
-		l.policyEndpointEgressMap.Store(podIdentifier, egressProgEntry)
+		//egressProgEntry := goebpf.BPFProgram{egressProgFd, ""}
+		//l.policyEndpointEgressMap.Store(podIdentifier, egressProgEntry)
+	}
+
+	return nil
+}
+
+func (l *bpfClient) DetacheBPFProbes(pod types.NamespacedName, ingress bool, egress bool) error {
+	hostVethName := l.getHostVethName(pod)
+	l.logger.Info("DetachIngressProbe for", "pod", pod.Name, " in namespace", pod.Namespace, " with hostVethName", hostVethName)
+	podIdentifier, _ := utils.GetPodIdentifier(pod.Name, pod.Namespace)
+	if ingress {
+		err := l.detachIngressBPFProbe(hostVethName)
+		if err != nil {
+			l.logger.Info("Failed to Detach Ingress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
+		}
+		l.logger.Info("Successfully detached Ingress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
+		//ingressProgEntry := goebpf.BPFProgram{ingressProgFd, ""}
+		l.policyEndpointIngressMap.Delete(podIdentifier)
+	}
+
+	if egress {
+		err := l.detachEgressBPFProbe(hostVethName)
+		if err != nil {
+			l.logger.Info("Failed to Detach Egress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
+		}
+		l.logger.Info("Successfully detached Egress TC probe for", "pod: ", pod.Name, " in namespace", pod.Namespace)
+		l.policyEndpointEgressMap.Delete(podIdentifier)
 	}
 
 	return nil
@@ -79,8 +107,8 @@ func (l *bpfClient) attachIngressBPFProbe(hostVethName string, podIdentifier str
 	value, ok := l.policyEndpointIngressMap.Load(podIdentifier)
 	if ok {
 		l.logger.Info("Found an existing instance")
-		ingressEbpfPgm := value.(goebpf.BPFProgram)
-		progFD = ingressEbpfPgm.ProgFD
+		ingressEbpfProgEntry := value.(goelf.BPFParser)
+		progFD = ingressEbpfProgEntry.ElfContext.Section["tc_cls"].Programs["handle_egress"].ProgFD
 	} else { //!ok
 		l.logger.Info("Load new instance of the eBPF program")
 		// Load a new instance of the ingress program
@@ -89,12 +117,13 @@ func (l *bpfClient) attachIngressBPFProbe(hostVethName string, podIdentifier str
 			l.logger.Info("Load BPF failed", "err:", err)
 		}
 
-		progFD = (*elfInfo).Section["tc_cls"].Programs["handle_egress"].ProgFD
-		mapFD = int((*elfInfo).Maps["egress_map"].MapFD)
+		progFD = (*elfInfo).ElfContext.Section["tc_cls"].Programs["handle_egress"].ProgFD
+		mapFD = int((*elfInfo).ElfContext.Maps["egress_map"].MapFD)
 
-		//progEntry := goebpf.BPFProgram{progFD, ""}
+		//ingressProgEntry := goebpf.BPFProgram{progFD, ""}
+		ingressProgEntry := elfInfo //goebpf.BPFParser{progFD, ""}
 		l.logger.Info("Ingress Prog Load Succeeded", "progFD for handle_egress: ", progFD, "mapFD: ", mapFD)
-		//l.policyEndpointIngressMap.Store(podIdentifier, progEntry)
+		l.policyEndpointIngressMap.Store(podIdentifier, ingressProgEntry)
 		l.bpfProgMap.Store(progFD, mapFD)
 	}
 
@@ -116,8 +145,8 @@ func (l *bpfClient) attachEgressBPFProbe(hostVethName string, podIdentifier stri
 	value, ok := l.policyEndpointEgressMap.Load(podIdentifier)
 	if ok {
 		l.logger.Info("Found an existing instance")
-		egressEbpfPgm := value.(goebpf.BPFProgram)
-		progFD = egressEbpfPgm.ProgFD
+		egressEbpfProgEntry := value.(goelf.BPFParser)
+		progFD = egressEbpfProgEntry.ElfContext.Section["tc_cls"].Programs["handle_ingress"].ProgFD
 	} else { //!ok
 		l.logger.Info("Load new instance of the eBPF program")
 		// Load a new instance of the ingress program
@@ -126,12 +155,12 @@ func (l *bpfClient) attachEgressBPFProbe(hostVethName string, podIdentifier stri
 			l.logger.Info("Load BPF failed", "err:", err)
 		}
 
-		progFD = (*elfInfo).Section["tc_cls"].Programs["handle_ingress"].ProgFD
-		mapFD = int((*elfInfo).Maps["ingress_map"].MapFD)
+		progFD = (*elfInfo).ElfContext.Section["tc_cls"].Programs["handle_ingress"].ProgFD
+		mapFD = int((*elfInfo).ElfContext.Maps["ingress_map"].MapFD)
 
-		//progEntry := goebpf.BPFProgram{progFD, ""}
+		egressProgEntry := elfInfo
 		l.logger.Info("Egress Prog Load Succeeded", "progFD for handle_ingress: ", progFD, " mapFD: ", mapFD)
-		//l.policyEndpointEgressMap.Store(podIdentifier, progEntry)
+		l.policyEndpointEgressMap.Store(podIdentifier, egressProgEntry)
 		l.bpfProgMap.Store(progFD, mapFD)
 	}
 
@@ -144,14 +173,42 @@ func (l *bpfClient) attachEgressBPFProbe(hostVethName string, podIdentifier stri
 	return progFD, nil
 }
 
+func (l *bpfClient) detachIngressBPFProbe(hostVethName string) error {
+	l.logger.Info("Attempting to do an Ingress Detach")
+	err := goebpf.TCIngressDetach(hostVethName)
+	if err != nil {
+		l.logger.Info("Ingress Detach failed:", "error", err)
+		return err
+	}
+	return nil
+}
+
+func (l *bpfClient) detachEgressBPFProbe(hostVethName string) error {
+	l.logger.Info("Attempting to do an Egress Detach")
+	err := goebpf.TCEgressDetach(hostVethName)
+	if err != nil {
+		l.logger.Info("Ingress Detach failed:", "error", err)
+		return err
+	}
+	return nil
+}
+
 type EbpfFirewallRules struct {
 	IPCidr []v1alpha1.NetworkPeer
 	L4Info []v1alpha1.Port
 }
 
-func (l *bpfClient) UpdateEbpfMap(bpfPgm goebpf.BPFProgram, firewallRules []EbpfFirewallRules) error {
+func (l *bpfClient) UpdateEbpfMap(bpfPgm *goelf.BPFParser, firewallRules []EbpfFirewallRules,
+	ingress bool) error {
 
-	cacheValue, _ := l.bpfProgMap.Load(bpfPgm.ProgFD)
+	var progFD int
+	if ingress {
+		progFD = (*bpfPgm).ElfContext.Section["tc_cls"].Programs["handle_egress"].ProgFD
+	} else {
+		progFD = (*bpfPgm).ElfContext.Section["tc_cls"].Programs["handle_ingress"].ProgFD
+	}
+	l.logger.Info("Map Update - Prog", "FD:", progFD)
+	cacheValue, _ := l.bpfProgMap.Load(progFD)
 	mapFD := cacheValue.(int)
 	l.logger.Info("Update Map", "FD:", mapFD)
 
@@ -167,7 +224,7 @@ func (l *bpfClient) UpdateEbpfMap(bpfPgm goebpf.BPFProgram, firewallRules []Ebpf
 				l.logger.Info("parsed", "addr", mapKey)
 				key := l.toKey(*mapKey)
 				//index := 0
-				err := bpfPgm.UpdateMapEntry(uintptr(unsafe.Pointer(&key[0])), uintptr(unsafe.Pointer(&value[0])),
+				err := (*bpfPgm).BpfMapAPIs.UpdateMapEntry(uintptr(unsafe.Pointer(&key[0])), uintptr(unsafe.Pointer(&value[0])),
 					uint32(mapFD))
 				if err != nil {
 					l.logger.Info("BPF map update failed", "error: ", err)
@@ -199,9 +256,17 @@ func (l *bpfClient) toKey(n net.IPNet) []byte {
 }
 
 func (l *bpfClient) toValue(l4Info v1alpha1.Port) []byte {
-	protocol := 1 //string(*l4Info.Protocol)
-	startPort := (*l4Info.Port).IntValue()
-	endPort := 0 //*l4Info.EndPort
+	protocol := 6 //string(*l4Info.Protocol)
+	var startPort int
+	endPort := 65535
+
+	if l4Info.Port != nil {
+		startPort = (*l4Info.Port).IntValue()
+	}
+
+	if l4Info.EndPort != nil {
+		endPort = int(*l4Info.EndPort)
+	}
 
 	l.logger.Info("L4 values: ", "protocol: ", protocol, "startPort: ", startPort, "endPort: ", endPort)
 	// Key format: Prefix length (4 bytes) followed by 4 byte IP

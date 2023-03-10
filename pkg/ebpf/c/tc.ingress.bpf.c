@@ -132,12 +132,66 @@ struct bpf_map_def_pvt SEC("maps") ingress_map = {
     .pinning = PIN_GLOBAL_NS,
 };
 
+/*
+static __always_inline u32 flow_status(struct nf_conn *ct) {
+  u32 status;
+  bpf_probe_read(&status, sizeof(status), &ct->status);
+  return status;
+}
+
+static __always_inline void get_conntrack_tuple(struct conntrack_cache *data, struct nf_conn *ct) {
+
+  struct nf_conntrack_tuple_hash tuplehash[IP_CT_DIR_MAX];
+  bpf_probe_read(&tuplehash, sizeof(tuplehash), &ct->tuplehash);
+
+  bpf_probe_read(&data->proto, sizeof(data->proto), &tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.protonum);
+
+  bpf_probe_read(&data->srcaddr, sizeof(data->srcaddr), &tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u3);
+  bpf_probe_read(&data->dstaddr, sizeof(data->dstaddr), &tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.u3);
+
+  bpf_probe_read(&data->src_port, sizeof(data->src_port), &tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u.all);
+  bpf_probe_read(&data->dst_port, sizeof(data->dst_port), &tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.u.all);
+}
+
+SEC("kprobe/__nf_conntrack_hash_insert")
+int conn_insert(struct pt_regs *ctx) {
+
+  	u64 ts = bpf_ktime_get_ns();
+
+  	struct nf_conn *ct = (struct nf_conn *) PT_REGS_PARM1(ctx);
+
+   	if (flow_status(ct) == 0)
+   	 	return 0;
+
+
+	bpf_map_update_elem(&flow_origin, &ct, &ts, BPF_NOEXIST);
+	return 0;
+}
+
+
+SEC("kprobe/nf_ct_delete")
+int conn_del(struct pt_regs *ctx) {
+
+  struct nf_conn *ct = (struct nf_conn *) PT_REGS_PARM1(ctx);
+  struct conntrack_cache conn_data;
+  get_conntrack_tuple(&conn_data, ct);
+
+  //Use conn_data to compare sport/dport/sip/dip/proto
+
+  bpf_map_delete_elem(&flow_origin, &ct);
+
+  return 0;
+}
+*/
 
 SEC("tc_cls")
 int handle_ingress(struct __sk_buff *skb)
 {
 	struct keystruct trie_key;
 	struct lpm_trie_val *trie_val;
+	int l4port = 0;
+	//int htons_port = 0;
+	//int ntohs_port = 0;
     void *data_end = (void *)(long)skb->data_end;
   	void *data = (void *)(long)skb->data;
   	
@@ -148,13 +202,47 @@ int handle_ingress(struct __sk_buff *skb)
   	if (ether->h_proto == 0x08U) {  // htons(ETH_P_IP) -> 0x08U
     		data += sizeof(*ether);
     		struct iphdr *ip = data;
+    		struct tcphdr *l4hdr = data + sizeof(struct iphdr);
     		if (data + sizeof(*ip) > data_end) {
       			return BPF_OK;
     		}
     		if (ip->version != 4) {
       			return BPF_OK;
     		}
+    		if (data + sizeof(*ip) + sizeof(*l4hdr) > data_end) {
+                return BPF_OK;
+            }
+
+
 		bpf_printk("Src addr %x", ip->saddr);
+		bpf_printk("Protocol in the IP Header: %d", ip->protocol);
+		bpf_printk("L4 Src Port: %d", l4hdr->source);
+
+        l4port = (((((unsigned short)(l4hdr->source) & 0xFF)) << 8) | (((unsigned short)(l4hdr->source) & 0xFF00) >> 8));
+       // ntohs_port = (((((unsigned short)(l4hdr->source) & 0xFF)) << 8) | (((unsigned short)(l4hdr->source) & 0xFF00) >> 8));
+
+        bpf_printk("L4 Src Port - ntohs: %d", l4port);
+        //bpf_printk("L4 Src Port - htons: %d", htons_port);
+
+
+		//bpf_printk("L4 Src Port - be16 convert: %d", be16_to_cpu(l4hdr->source));
+		//bpf_printk("L4 Dest Port: %d", l4hdr->dest);
+       // bpf_printk("L4 Dest Port - be16 convert: %d", be16_to_cpu(l4hdr->dest));
+
+
+
+/*
+		if (ip->protocol == IPPROTO_TCP) {
+		    struct tcphdr *l4hdr = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
+		    l4port = l4hdr->source;
+		    bpf_printk("L4 Port: %d", l4port);
+		} else if (ip->protocol == IPPROTO_UDP) {
+		    struct udphdr *l4hdr = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
+		    l4port = l4hdr->source;
+		}
+		*/
+
+
 		trie_key.prefix_len = 32;
 		trie_key.ip[0] = ip->saddr & 0xff;
 		trie_key.ip[1] = (ip->saddr >> 8) & 0xff;
@@ -177,6 +265,15 @@ int handle_ingress(struct __sk_buff *skb)
         bpf_printk("Flow Protocol: %d", trie_val->protocol);
         bpf_printk("Flow Start Port: %d", trie_val->start_port);
         bpf_printk("Flow End Port: %d", trie_val->end_port);
+
+        //if (((trie_val->protocol == ip->protocol) ||  (trie_val->protocol == 1))
+        if (trie_val->protocol == ip->protocol && l4port >= trie_val->start_port
+             && l4port <= trie_val->end_port) {
+            bpf_printk("Protocol and Port match %d; %d", trie_val->protocol, l4port);
+            return BPF_OK;
+        } else {
+            return BPF_DROP;
+        }
 
 		//return val == NULL ? BPF_DROP : BPF_OK;
 	}
