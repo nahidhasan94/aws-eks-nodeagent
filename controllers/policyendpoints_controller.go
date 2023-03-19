@@ -149,14 +149,19 @@ func (r *PolicyEndpointsReconciler) reconcilePolicyEndpoint(ctx context.Context,
 	//Loop over target pods and setup/configure eBPF probes/maps
 	for _, pod := range targetPods {
 		r.Log.Info("Pod: ", "name:", pod.Name, "namespace:", pod.Namespace)
-
-		policyEndpointIdentifier := req.NamespacedName.Namespace + req.NamespacedName.Name
+		policyEndpointIdentifier := utils.GetPolicyEndpointIdentifier(req.NamespacedName.Name,
+			req.NamespacedName.Namespace)
 		podIdentifier, _ := utils.GetPodIdentifier(pod.Name, pod.Namespace)
+		r.Log.Info("PolicyEndpoint Identifier: ", "Identifer: ", policyEndpointIdentifier)
 		r.Log.Info("Map Identifier: ", "Pod Identifer: ", podIdentifier)
 
+		//Check if we've already processed this pod against this policyEndpoint resource
 		if knownPodsList, ok := r.policyEndpointSelectorMap.Load(policyEndpointIdentifier); ok {
 			for _, podID := range knownPodsList.([]types.NamespacedName) {
 				if podID.Name+podID.Namespace == pod.Name+pod.Namespace {
+					//Note: Update to this PE resource can have both new pods and new endpoints
+					//and since we share the maps across these pods, updating the map as part of new
+					//endpoint processing will take care of that.
 					existingPod = true
 					break
 				}

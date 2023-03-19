@@ -8,3 +8,7 @@ func GetPodIdentifier(podName, podNamespace string) (string, error) {
 
 	return replicaSetName + "-" + podNamespace, nil
 }
+
+func GetPolicyEndpointIdentifier(name, namespace string) string {
+	return name + namespace
+}

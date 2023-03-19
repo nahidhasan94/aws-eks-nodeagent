@@ -122,6 +122,18 @@ struct lpm_trie_val {
     __u32 end_port;
 };
 
+struct conntrack_key {
+   __u32 src_ip;
+   __u16 src_port;
+   __u32 dest_ip;
+   __u16 dest_port;
+   __u8  protocol;
+};
+
+struct conntrack_value {
+   __u32 val;
+};
+
 struct bpf_map_def_pvt SEC("maps") egress_map = {
     .type = BPF_MAP_TYPE_LPM_TRIE,
     .key_size =sizeof(struct lpm_trie_key),
@@ -131,17 +143,32 @@ struct bpf_map_def_pvt SEC("maps") egress_map = {
     .pinning = PIN_GLOBAL_NS,
 };
 
+struct bpf_map_def_pvt SEC("maps") conntrack_egress_map = {
+    .type = BPF_MAP_TYPE_HASH,
+    .key_size =sizeof(struct conntrack_key),
+    .value_size = sizeof(struct conntrack_value),
+    .max_entries = 100,
+    .pinning = PIN_GLOBAL_NS,
+};
 
 SEC("tc_cls")
 int handle_egress(struct __sk_buff *skb)
 {
 	struct keystruct trie_key;
 	struct lpm_trie_val *trie_val;
-	int l4port = 0;
-	//int htons_port = 0;
-	//int ntohs_port = 0;
+	int l4_src_port = 0;
+	int l4_dst_port = 0;
+	struct conntrack_key flow_key;
+    struct conntrack_value flow_val;
+    struct conntrack_key reverse_flow_key;
+    struct conntrack_value reverse_flow_val;
     void *data_end = (void *)(long)skb->data_end;
   	void *data = (void *)(long)skb->data;
+
+  	memset(&flow_key, 0, sizeof(flow_key));
+    memset(&flow_val, 0, sizeof(flow_val));
+    memset(&reverse_flow_key, 0, sizeof(reverse_flow_key));
+    memset(&reverse_flow_val, 0, sizeof(reverse_flow_val));
   	
 	struct ethhdr *ether = data;
   	if (data + sizeof(*ether) > data_end) {
@@ -166,14 +193,11 @@ int handle_egress(struct __sk_buff *skb)
         bpf_printk("L4 Src Port: %d", l4hdr->source);
 
 
-        l4port = (((((unsigned short)(l4hdr->source) & 0xFF)) << 8) | (((unsigned short)(l4hdr->source) & 0xFF00) >> 8));
-        //ntohs_port = (((((unsigned short)(l4hdr->source) & 0xFF)) << 8) | (((unsigned short)(l4hdr->source) & 0xFF00) >> 8));
+        l4_src_port = (((((unsigned short)(l4hdr->source) & 0xFF)) << 8) | (((unsigned short)(l4hdr->source) & 0xFF00) >> 8));
+        l4_dst_port = (((((unsigned short)(l4hdr->dest) & 0xFF)) << 8) | (((unsigned short)(l4hdr->dest) & 0xFF00) >> 8));
 
-        bpf_printk("L4 Src Port - ntohs: %d", l4port);
-        //bpf_printk("L4 Src Port - htons: %d", htons_port);
-      //  bpf_printk("L4 Dest Port: %d", l4hdr->dest);
-      //  bpf_printk("L4 Dest Port - be16 convert: %d", be16_to_cpu(l4hdr->dest));
-
+        bpf_printk("conv: L4 Src Port: %d", l4_src_port);
+        bpf_printk("conv: L4 Dest Port: %d", l4_dst_port);
 
 /*
 		if (ip->protocol == IPPROTO_TCP) {
@@ -186,18 +210,48 @@ int handle_egress(struct __sk_buff *skb)
 		}
 		*/
 
-		//bpf_printk("Port: %d", tcph->source);
 
 		trie_key.prefix_len = 32;
 		trie_key.ip[0] = ip->daddr & 0xff;
 		trie_key.ip[1] = (ip->daddr >> 8) & 0xff;
 		trie_key.ip[2] = (ip->daddr >> 16) & 0xff;
 		trie_key.ip[3] = (ip->daddr >> 24) & 0xff;
-         
-		bpf_printk("0 byte %d", trie_key.ip[0]);
-		bpf_printk("1 byte %d", trie_key.ip[1]);
-		bpf_printk("2 byte %d", trie_key.ip[2]);
-		bpf_printk("3 byte %d", trie_key.ip[3]);
+
+        //Check for the an existing flow in the conntrack table
+		flow_key.src_ip = ip->saddr;
+        flow_key.src_port = l4_src_port;
+        flow_key.dest_ip = ip->daddr;
+        flow_key.dest_port = l4_dst_port;
+        flow_key.protocol = ip->protocol;
+
+        flow_val.val = 0;
+
+        //Check if it's an existing flow
+        trie_val = bpf_map_lookup_elem(&conntrack_egress_map, &flow_key);
+        if (trie_val != NULL) {
+           bpf_printk("Existing Flow: Src IP:Src Port; Protocol: %d, %d, %d",
+           (__u32)ip->saddr, l4_src_port, ip->protocol);
+           return BPF_OK;
+        }
+
+        //Check for the reverse flow entry in the conntrack table
+        reverse_flow_key.src_ip = ip->daddr;
+        reverse_flow_key.src_port = l4_dst_port;
+        reverse_flow_key.dest_ip = ip->saddr;
+        reverse_flow_key.dest_port = l4_src_port;
+        reverse_flow_key.protocol = ip->protocol;
+
+        reverse_flow_val.val = 0;
+
+        //Check if it's a response packet
+        trie_val = bpf_map_lookup_elem(&conntrack_egress_map, &reverse_flow_key);
+        if (trie_val != NULL) {
+           bpf_printk("Response Flow: Src IP:Src Port; Protocol: %d, %d, %d",
+           (__u32)ip->saddr, l4_src_port, ip->protocol);
+           return BPF_OK;
+        }
+
+        //Check if it's in the allowed list
 		trie_val = bpf_map_lookup_elem(&egress_map, &trie_key);
 
 		if (trie_val == NULL) {
@@ -208,17 +262,19 @@ int handle_egress(struct __sk_buff *skb)
         bpf_printk("Flow Start Port: %d", trie_val->start_port);
         bpf_printk("Flow End Port: %d", trie_val->end_port);
 
-
-        //if (((trie_val->protocol == ip->protocol) ||  (trie_val->protocol == 1))
-        if (trie_val->protocol == ip->protocol && l4port >= trie_val->start_port
-             && l4port <= trie_val->end_port) {
-            bpf_printk("Protocol and Port match %d; %d", trie_val->protocol, l4port);
+        if (trie_val->protocol == ip->protocol && l4_src_port >= trie_val->start_port
+             && l4_src_port <= trie_val->end_port) {
+            bpf_printk("ACCEPT - Dest IP:Dest Port; Protocol: %d, %d, %d",
+            (__u32)ip->daddr, l4_src_port, ip->protocol);
+            //Update conntrack map
+            bpf_map_update_elem(&conntrack_egress_map, &flow_key, &flow_val, 0); // 0 - BPF_ANY
             return BPF_OK;
         } else {
+            //Log and move on
+            bpf_printk("DENY - Dest IP:Dest Port; Dest IP; Protocol: %d, %d, %d",
+            (__u32)ip->daddr, l4_src_port, ip->protocol);
             return BPF_DROP;
         }
-
-		//return val == NULL ? BPF_DROP : BPF_OK;
 	}
         return BPF_OK;
 }

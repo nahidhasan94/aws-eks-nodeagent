@@ -18,6 +18,14 @@ import (
 	"unsafe"
 )
 
+var (
+	TC_INGRESS_BINARY = "tc.ingress.bpf.o"
+	TC_EGRESS_BINARY  = "tc.egress.bpf.o"
+	TC_PROG_SECTION   = "tc_cls"
+	TC_INGRESS_PROG   = "handle_ingress"
+	TC_EGRESS_PROG    = "handle_egress"
+)
+
 type BpfClient interface {
 	AttacheBPFProbes(pod types.NamespacedName, policyEndpoint string, ingress bool, egress bool) error
 	DetacheBPFProbes(pod types.NamespacedName, ingress bool, egress bool) error
@@ -108,11 +116,11 @@ func (l *bpfClient) attachIngressBPFProbe(hostVethName string, podIdentifier str
 	if ok {
 		l.logger.Info("Found an existing instance")
 		ingressEbpfProgEntry := value.(goelf.BPFParser)
-		progFD = ingressEbpfProgEntry.ElfContext.Section["tc_cls"].Programs["handle_egress"].ProgFD
+		progFD = ingressEbpfProgEntry.ElfContext.Section[TC_PROG_SECTION].Programs[TC_EGRESS_PROG].ProgFD
 	} else { //!ok
 		l.logger.Info("Load new instance of the eBPF program")
 		// Load a new instance of the ingress program
-		elfInfo, err := goelf.LoadBpfFile("tc.egress.bpf.o")
+		elfInfo, err := goelf.LoadBpfFile(TC_EGRESS_BINARY)
 		if err != nil {
 			l.logger.Info("Load BPF failed", "err:", err)
 		}
@@ -146,11 +154,11 @@ func (l *bpfClient) attachEgressBPFProbe(hostVethName string, podIdentifier stri
 	if ok {
 		l.logger.Info("Found an existing instance")
 		egressEbpfProgEntry := value.(goelf.BPFParser)
-		progFD = egressEbpfProgEntry.ElfContext.Section["tc_cls"].Programs["handle_ingress"].ProgFD
+		progFD = egressEbpfProgEntry.ElfContext.Section[TC_PROG_SECTION].Programs[TC_INGRESS_PROG].ProgFD
 	} else { //!ok
 		l.logger.Info("Load new instance of the eBPF program")
 		// Load a new instance of the ingress program
-		elfInfo, err := goelf.LoadBpfFile("tc.ingress.bpf.o")
+		elfInfo, err := goelf.LoadBpfFile(TC_INGRESS_BINARY)
 		if err != nil {
 			l.logger.Info("Load BPF failed", "err:", err)
 		}
@@ -275,8 +283,6 @@ func (l *bpfClient) toValue(l4Info v1alpha1.Port) []byte {
 	binary.LittleEndian.PutUint32(value[0:4], uint32(protocol))
 	binary.LittleEndian.PutUint32(value[4:8], uint32(startPort))
 	binary.LittleEndian.PutUint32(value[8:12], uint32(endPort))
-
-	//copy(value[4:], n.IP)
 
 	return value
 }
