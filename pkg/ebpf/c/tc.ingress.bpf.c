@@ -340,6 +340,8 @@ int handle_ingress(struct __sk_buff *skb)
         bpf_printk("Flow Start Port: %d", trie_val->start_port);
         bpf_printk("Flow End Port: %d", trie_val->end_port);
 
+        __u64 flags = BPF_F_CURRENT_CPU;
+
         if (trie_val->protocol == ip->protocol && l4_src_port >= trie_val->start_port
              && l4_src_port <= trie_val->end_port) {
             bpf_printk("ACCEPT - Src IP:Src Port; Protocol: %d, %d, %d",
@@ -347,15 +349,17 @@ int handle_ingress(struct __sk_buff *skb)
             //Inject in to conntrack map
             bpf_map_update_elem(&conntrack_ingress_map, &flow_key, &flow_val, 0); // 0 - BPF_ANY
             evt.verdict = 1;
+            bpf_perf_event_output(skb, &events, flags, &evt, sizeof(evt));
             return BPF_OK;
         } else {
             bpf_printk("DENY - Src IP:Src Port; Protocol: %d, %d, %d",
             (__u32)ip->saddr, l4_src_port, ip->protocol);
             evt.verdict = 0;
+            bpf_perf_event_output(skb, &events, flags, &evt, sizeof(evt));
             return BPF_DROP;
         }
-        __u64 flags = BPF_F_CURRENT_CPU;
-        bpf_perf_event_output(skb, &events, flags, &evt, sizeof(evt));
+        //__u64 flags = BPF_F_CURRENT_CPU;
+       // bpf_perf_event_output(skb, &events, flags, &evt, sizeof(evt));
 	}
         return BPF_OK;
 }
