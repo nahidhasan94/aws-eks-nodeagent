@@ -102,6 +102,8 @@ struct bpf_map_def_pvt {
  *  /sys/fs/bpf/tc/globals/egress_ifindex
  */
 #define PIN_GLOBAL_NS	2
+#define BPF_F_INDEX_MASK 0xffffffffULL
+#define BPF_F_CURRENT_CPU BPF_F_INDEX_MASK
 /*
 struct bpf_elf_map SEC("maps") egress_ifindex = {
 	.type = BPF_MAP_TYPE_ARRAY,
@@ -133,6 +135,22 @@ struct conntrack_key {
 
 struct conntrack_value {
    __u32 val;
+};
+
+struct data_t {
+    __u32 src_ip;
+    __u32  src_port;
+    __u32  dest_ip;
+    __u32  dest_port;
+    __u32 protocol;
+    __u32 verdict;
+};
+
+struct bpf_map_def_pvt SEC("maps") events = {
+    .type = BPF_MAP_TYPE_PERF_EVENT_ARRAY,
+    .key_size = sizeof(__u32),
+    .value_size = sizeof(__u32),
+    .max_entries = 1024,
 };
 
 struct bpf_map_def_pvt SEC("maps") ingress_map = {
@@ -279,6 +297,13 @@ int handle_ingress(struct __sk_buff *skb)
         flow_key.dest_port = l4_dst_port;
         flow_key.protocol = ip->protocol;
 
+        struct data_t evt = {};
+        evt.src_ip = flow_key.src_ip;
+        evt.src_port = flow_key.src_port;
+        evt.dest_ip = flow_key.dest_ip;
+        evt.dest_port = flow_key.dest_port;
+        evt.protocol = flow_key.protocol; 
+
         flow_val.val = 0;
 
         //Check if it's an existing flow
@@ -321,12 +346,16 @@ int handle_ingress(struct __sk_buff *skb)
             (__u32)ip->saddr, l4_src_port, ip->protocol);
             //Inject in to conntrack map
             bpf_map_update_elem(&conntrack_ingress_map, &flow_key, &flow_val, 0); // 0 - BPF_ANY
+            evt.verdict = 1;
             return BPF_OK;
         } else {
             bpf_printk("DENY - Src IP:Src Port; Protocol: %d, %d, %d",
             (__u32)ip->saddr, l4_src_port, ip->protocol);
+            evt.verdict = 0;
             return BPF_DROP;
         }
+        __u64 flags = BPF_F_CURRENT_CPU;
+        bpf_perf_event_output(skb, &events, flags, &evt, sizeof(evt));
 	}
         return BPF_OK;
 }
